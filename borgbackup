@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -e
+
+
+backup() {
+    if [ ! -e "${repo}" ]; then
+        echo "${repo}" not exist
+        echo create new repository: ${repo_name}
+        borg init "${repo}"
+    fi
+
+    # create archive
+    archive=$(date +%F-%H-%M-%S)
+    echo backup to ${repo_name}::${archive}
+    set -- --compression zlib --info --progress
+    if [ -e "${sources}/.borgignore" ]; then
+        set -- "$@" --exclude-from "${sources}/.borgignore"
+    else
+        echo warning: ${sources}/.borgignore not found
+    fi
+    borg create "${repo}::${archive}" "${sources}" "$@"
+
+    # reduce archive size and check integrity
+    borg info "${repo}::${archive}"
+    borg prune "${repo}" --keep-daily=7 --keep-weekly=4 --info --stats
+    borg check "${repo}" --info
+}
+
+extract() {
+    last_archive=$(borg list --short "${repo}" | tail -n1)
+    dest="${root}/restore/${repo_name}"
+    echo extract ${repo_name}::${last_archive} to "$dest"
+    (
+        rm -rf "${dest}";
+        mkdir -p "${dest}";
+        cd "${dest}";
+        borg extract --info "${repo}::${last_archive}";
+    )
+}
+
+macpath() {
+    ## Check if the input is an absolute path including the volume name
+    if [[ "$1" = /Volumes/* ]]
+        ## If TRUE, the path is already correct
+        then
+            echo "$1"
+
+        ## If FALSE, needs fixing
+        else
+            ## Resolve the volume name
+            ## by looping through all the volumes to find the one symlinked to "/"
+            for vol in /Volumes/*
+                do 
+                    if [ "$(readlink "$vol")" = / ]
+                        then root_vol=$vol
+                    fi
+                done
+            ## Pass the path back to Automator for further use
+            echo "$root_vol$1"
+    fi
+}
+
+
+root=$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)
+
+is_extract=
+if [ "$1" = "extract" ]; then
+    is_extract=1
+    shift
+fi
+if [ -n "$1" ]; then
+    sources="$1"
+else
+    # default to users desktop
+    case $OS in Windows_NT) sources=$(cygpath -D);; esac
+    case $OSTYPE in darwin*) sources=$(macpath "$(echo ~/Desktop)");; esac
+fi
+
+
+if [ ! -n "$sources" ]; then
+    echo error: no sources path given
+    exit 1
+fi
+
+if ! which borg  2>&1 >/dev/null; then
+    echo error: no borg program found
+    exit 1
+fi
+
+repo_name=$(hostname)_$(basename "${sources}")
+repo=${root}/repos/${repo_name}
+
+if [ -n "$is_extract" ]; then
+    extract
+else
+    backup
+fi
+
+
+# TODO: in windows, remember use root user to create symbolink
+# Solution: not to use symbolink
+
